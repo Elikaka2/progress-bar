@@ -1,0 +1,10 @@
+{
+    "id": "progress-bar",
+    "name": "Progress Bar",
+    "version": "1.0.0",
+    "minAppVersion": "1.0.0",
+    "description": "Adds progress bars based on Markdown checkboxes.",
+    "author": "Elikaka2",
+    "authorUrl": "https://github.com/Elikaka2",
+    "isDesktopOnly": false
+}

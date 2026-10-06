@@ -1,0 +1,10 @@
+.progress-bar {
+    width: 100%;
+    box-sizing: border-box;
+
+    font-family: monospace;
+    white-space: pre;
+
+    margin: 2px 0;
+    padding: 2px 0;
+}

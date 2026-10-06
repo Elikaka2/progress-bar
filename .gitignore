@@ -1,0 +1,8 @@
+node_modules/
+.obsidian/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.js.map
+main.js
