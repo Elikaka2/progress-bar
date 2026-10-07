@@ -1,5 +1,6 @@
 import {
-    RangeSetBuilder
+    RangeSetBuilder,
+    StateEffect
 } from "@codemirror/state";
 
 import {
@@ -11,21 +12,51 @@ import {
     WidgetType
 } from "@codemirror/view";
 
-import { ProgressCalculator } from "./ProgressCalculator";
-import { ProgressBarRenderer } from "./ProgressBarRenderer";
+import {
+    ProgressCalculator,
+    ProgressResult
+} from "./ProgressCalculator";
 
-const PROGRESS_BAR_MARKER = "[progressBar]";
+import {
+    ProgressBarRenderer
+} from "./ProgressBarRenderer";
 
-class ProgressBarWidget extends WidgetType {
+import {
+    ProgressBarSettings
+} from "./ProgressBarSettings";
+
+import ProgressBarPlugin
+    from "./main";
+
+
+/**
+ * Effect used to force Progress Bar decorations
+ * to be rebuilt when plugin settings change.
+ */
+export const refreshProgressBars =
+    StateEffect.define<void>();
+
+export const progressBarEditorViews =
+    new Set<EditorView>();
+
+/**
+ * Widget that replaces [progressBar]
+ * with the rendered progress bar.
+ */
+class ProgressBarWidget
+    extends WidgetType {
+
     constructor(
-        private readonly percentage: number
+        private readonly progress: ProgressResult,
+        private readonly settings: ProgressBarSettings
     ) {
         super();
     }
 
     toDOM(): HTMLElement {
         return ProgressBarRenderer.createElement(
-            this.percentage
+            this.progress,
+            this.settings
         );
     }
 
@@ -34,22 +65,75 @@ class ProgressBarWidget extends WidgetType {
     }
 }
 
-class ProgressBarEditorPlugin {
-    decorations: DecorationSet;
 
-    constructor(view: EditorView) {
-    this.decorations =
-        this.buildDecorations(view);
+/**
+ * Empty widget used to hide [/progressBar].
+ */
+class EmptyWidget
+    extends WidgetType {
+
+    toDOM(): HTMLElement {
+        const element =
+            document.createElement("span");
+
+        element.className =
+            "progress-bar-hidden-marker";
+
+        return element;
+    }
+
+    ignoreEvent(): boolean {
+        return true;
+    }
 }
 
+
+/**
+ * CodeMirror plugin responsible for
+ * displaying Progress Bars in Live Preview.
+ */
+class ProgressBarEditorPlugin {
+
+    decorations: DecorationSet;
+
+    constructor(
+        private readonly view: EditorView,
+        private readonly plugin: ProgressBarPlugin
+    ) {
+        progressBarEditorViews.add(view);
+
+        this.decorations =
+            this.buildDecorations(view);
+    }
+
     update(update: ViewUpdate): void {
-        if (update.docChanged || update.viewportChanged) {
+        const settingsChanged =
+            update.transactions.some(
+                (transaction) =>
+                    transaction.effects.some(
+                        (effect) =>
+                            effect.is(
+                                refreshProgressBars
+                            )
+                    )
+            );
+
+        if (
+            update.docChanged ||
+            update.viewportChanged ||
+            settingsChanged
+        ) {
             this.decorations =
-                this.buildDecorations(update.view);
+                this.buildDecorations(
+                    update.view
+                );
         }
     }
 
     destroy(): void {
+        progressBarEditorViews.delete(
+            this.view
+        );
     }
 
     private buildDecorations(
@@ -61,36 +145,88 @@ class ProgressBarEditorPlugin {
         const markdown =
             view.state.doc.toString();
 
-        const progress =
-            ProgressCalculator.calculate(markdown);
+        const lines =
+            markdown.split(/\r?\n/);
 
-        const percentage =
-            progress.percentage;
+        const wholeDocumentProgress =
+            ProgressCalculator.calculate(
+                markdown
+            );
 
-        for (const range of view.visibleRanges) {
-            let position = range.from;
+        for (
+            const range
+            of view.visibleRanges
+        ) {
+            let position =
+                range.from;
 
-            while (position <= range.to) {
+            while (
+                position <= range.to
+            ) {
                 const line =
-                    view.state.doc.lineAt(position);
+                    view.state.doc.lineAt(
+                        position
+                    );
 
+                const text =
+                    line.text.trim();
+
+                /*
+                 * [progressBar]
+                 */
                 if (
-                    line.text.trim() ===
-                    PROGRESS_BAR_MARKER
+                    text === "[progressBar]"
                 ) {
+                    const lineNumber =
+                        line.number - 1;
+
+                    const scope =
+                        this.findScope(
+                            lines,
+                            lineNumber
+                        );
+
+                    const progress =
+                        scope
+                            ? ProgressCalculator.calculateScope(
+                                markdown,
+                                scope.startLine,
+                                scope.endLine
+                            )
+                            : wholeDocumentProgress;
+
                     builder.add(
                         line.from,
                         line.to,
                         Decoration.replace({
                             widget:
                                 new ProgressBarWidget(
-                                    percentage
+                                    progress,
+                                    this.plugin.settings
                                 )
                         })
                     );
                 }
 
-                if (line.to >= range.to) {
+                /*
+                 * [/progressBar]
+                 */
+                else if (
+                    text === "[/progressBar]"
+                ) {
+                    builder.add(
+                        line.from,
+                        line.to,
+                        Decoration.replace({
+                            widget:
+                                new EmptyWidget()
+                        })
+                    );
+                }
+
+                if (
+                    line.to >= range.to
+                ) {
                     break;
                 }
 
@@ -101,17 +237,73 @@ class ProgressBarEditorPlugin {
 
         return builder.finish();
     }
+
+    /**
+     * Finds the closing marker for a
+     * specific opening marker.
+     */
+    private findScope(
+        lines: string[],
+        openLine: number
+    ): {
+        startLine: number;
+        endLine: number;
+    } | null {
+
+        for (
+            let i = openLine + 1;
+            i < lines.length;
+            i++
+        ) {
+            if (
+                lines[i].trim() ===
+                "[/progressBar]"
+            ) {
+                return {
+                    startLine:
+                        openLine + 1,
+
+                    endLine:
+                        i - 1
+                };
+            }
+        }
+
+        /*
+         * There is no closing marker.
+         *
+         * According to our syntax, an opening
+         * marker without a closing marker
+         * should count the entire document.
+         */
+        return null;
+    }
 }
 
-const progressBarEditorPlugin =
-    ViewPlugin.fromClass(
-        ProgressBarEditorPlugin,
+
+/**
+ * Creates the CodeMirror extension for
+ * a specific Progress Bar plugin instance.
+ */
+export function createProgressBarEditorExtension(
+    plugin: ProgressBarPlugin
+) {
+    return ViewPlugin.fromClass(
+        class extends ProgressBarEditorPlugin {
+
+            constructor(
+                view: EditorView
+            ) {
+                super(
+                    view,
+                    plugin
+                );
+            }
+        },
         {
             decorations: (
-                plugin
-            ) => plugin.decorations
+                value
+            ) => value.decorations
         }
     );
-
-export const progressBarEditorExtension =
-    progressBarEditorPlugin;
+}
